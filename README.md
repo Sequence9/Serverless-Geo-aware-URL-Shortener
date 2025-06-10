@@ -26,8 +26,8 @@ graph TD
         Lambda -- "3. GetItem(short_id='test')" --> DDB
         DDB -- "4. Returns Item" --> Lambda
         Lambda -- "5. Process Item" --> Logic
-        Logic -- "Yes" --> |"Finds correct URL (default or by country)"| Redirect[Construct 302 Redirect Response]
-        Logic -- "No" --> NotFound[Construct 404 Not Found Response]
+        Logic -- "Yes" --> Redirect["Construct 302 Redirect Response"]
+        Logic -- "No" --> NotFound["Construct 404 Not Found Response"]
     end
 
     Redirect -- "6. Returns Response" --> CF
