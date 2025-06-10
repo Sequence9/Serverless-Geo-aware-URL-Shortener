@@ -1,0 +1,93 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  A serverless, geo-aware URL shortener using CloudFront, Lambda@Edge, and DynamoDB.
+
+Globals:
+  Function:
+    Timeout: 5
+    MemorySize: 128
+
+Resources:
+  # DynamoDB table to store the links
+  UrlShortenerTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: url-shortener
+      AttributeDefinitions:
+        - AttributeName: short_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: short_id
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+
+  # The Lambda@Edge function's IAM Role
+  RedirectFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+                - edgelambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: DynamoDBReadAndLoggingPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: 'arn:aws:logs:*:*:*'
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                Resource: !GetAtt UrlShortenerTable.Arn
+
+  # The Lambda@Edge function
+  RedirectFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: geo-redirect-logic
+      CodeUri: src/
+      Handler: app.lambda_handler
+      Runtime: python3.12
+      Role: !GetAtt RedirectFunctionRole.Arn
+      # This is crucial for Lambda@Edge! It automatically creates versions.
+      AutoPublishAlias: live
+
+  # A dummy S3 Bucket required as a CloudFront Origin
+  S3OriginBucket:
+    Type: AWS::S3::Bucket
+
+  # The CloudFront distribution that triggers the Lambda function
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: 'Serverless URL Shortener'
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD]
+          Compress: true
+          LambdaFunctionAssociations:
+            - EventType: viewer-request
+              LambdaFunctionARN: !Ref RedirectFunction.Version
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt S3OriginBucket.DomainName
+            S3OriginConfig: {}
+
+Outputs:
+  CloudFrontDomainName:
+    Description: "The domain name of the CloudFront distribution"
+    Value: !GetAtt CloudFrontDistribution.DomainName

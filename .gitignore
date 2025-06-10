@@ -1,0 +1,15 @@
+# Python build artifacts
+__pycache__/
+*.pyc
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# AWS SAM build artifacts
+.aws-sam/
+packaged.yaml
+
+# Local environment variables
+.env
