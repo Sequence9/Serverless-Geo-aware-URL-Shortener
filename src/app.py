@@ -1,81 +1,98 @@
-import boto3
+# src/app.py
 import os
+import boto3
 
-# Initialize the DynamoDB client, pointing to the correct region for the table
-# Note: Lambda@Edge itself runs from us-east-1, but it can call services in any region.
-dynamodb = boto3.resource('dynamodb', region_name='us-east-2')
+# ---- Configuration ----
+# Lambda@Edge runs in us-east-1 and env vars are not reliable there
+# Keep the table name constant and region us-east-1
+TABLE_NAME = "url-shortener"
+AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+AWS_ENDPOINT_URL = os.getenv("AWS_ENDPOINT_URL")  # used for LocalStack in tests/CI
 
-# Get table name from environment variables set by SAM template, with a fallback
-table_name = os.environ.get('TABLE_NAME', 'geo-url-shortener')
-table = dynamodb.Table(table_name)
+# Use resource for native (de-typed) DynamoDB items.
+_dynamodb = boto3.resource(
+    "dynamodb",
+    region_name=AWS_REGION,
+    endpoint_url=AWS_ENDPOINT_URL,
+    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+)
+_table = _dynamodb.Table(TABLE_NAME)
 
-def lambda_handler(event, context):
+
+def _cf_headers(d: dict):
+    """CloudFront header format: lower-case keys, list of {key,value}."""
+    return {k.lower(): [{"key": k.title(), "value": v}] for k, v in d.items()}
+
+
+def _redirect(url: str, ttl: int = 300):
+    return {
+        "status": "302",
+        "statusDescription": "Found",
+        "headers": _cf_headers({
+            "Location": url,
+            "Cache-Control": f"max-age={ttl}",
+        }),
+    }
+
+
+def _not_found(ttl: int = 60, body: str | None = None):
+    resp = {
+        "status": "404",
+        "statusDescription": "Not Found",
+        "headers": _cf_headers({"Cache-Control": f"max-age={ttl}"}),
+    }
+    if body:
+        resp["body"] = body
+    return resp
+
+
+def lambda_handler(event, _context):
     """
-    Handles viewer requests from CloudFront.
-    - Extracts the short_id from the URL path.
-    - Gets the viewer's country from headers.
-    - Queries DynamoDB for the destination URL.
-    - Returns an HTTP 302 redirect response.
+    Handles **origin-request** events from CloudFront.
+    - Extracts the short_id from the URI.
+    - Reads country from CloudFront-Viewer-Country header.
+    - Looks up the destination in DynamoDB.
+    - Returns a 302 redirect (or 404 if not found).
     """
-    request = event['Records'][0]['cf']['request']
-    headers = request['headers']
-    path = request['uri']
+    request = event["Records"][0]["cf"]["request"]
+    headers = request.get("headers", {})
+    uri = request.get("uri", "/")
 
-    # Ignore browser requests for the favorite icon
-    if path.endswith('favicon.ico'):
-        return { 'status': '204', 'statusDescription': 'No Content' }
+    # Ignore favicon
+    if uri.endswith("favicon.ico"):
+        return {"status": "204", "statusDescription": "No Content"}
 
-    # Handle root path requests
-    if path == "/" or len(path) <= 1:
-        default_url = os.environ.get('DEFAULT_URL', 'https://github.com/aws-samples')
-        return {
-            'status': '302',
-            'statusDescription': 'Found',
-            'headers': {
-                'location': [{'key': 'Location', 'value': default_url}]
-            }
-        }
-    
-    short_id = path.lstrip('/')
+    # "/" -> no short_id
+    short_id = uri.lstrip("/")
+    if not short_id:
+        return _not_found(body="No short id")
 
-    # Get viewer's country code; defaults to 'default' if header is not present
-    viewer_country = 'default'
-    if 'cloudfront-viewer-country' in headers:
-        viewer_country = headers['cloudfront-viewer-country'][0]['value']
+    # Country header is lower-cased by CF in the event
+    country = ""
+    if "cloudfront-viewer-country" in headers and headers["cloudfront-viewer-country"]:
+        country = headers["cloudfront-viewer-country"][0].get("value", "").upper()
 
     try:
-        # Query DynamoDB for the short_id
-        response = table.get_item(Key={'short_id': short_id})
-        
-        if 'Item' not in response:
-            return {
-                'status': '404',
-                'statusDescription': 'Not Found',
-                'body': f'Short URL for "{short_id}" not found.'
-            }
+        resp = _table.get_item(Key={"short_id": short_id})
+        item = resp.get("Item")
+        if not item:
+            return _not_found(body=f'Short URL for "{short_id}" not found.')
 
-        destinations = response['Item'].get('destinations', {})
-        
-        # Determine the final URL: country-specific or fallback to default
-        destination_url = destinations.get(viewer_country, destinations.get('default'))
+        destinations = item.get("destinations", {}) or {}
 
-        if not destination_url:
-             raise KeyError("A valid 'default' destination is required in the DynamoDB item.")
+        # choose country-specific first, then default
+        url = destinations.get(country) or destinations.get("default")
+        if not url:
+            return _not_found(body=f'No destination for "{short_id}"')
 
-        # Return the 302 Redirect response
-        return {
-            'status': '302',
-            'statusDescription': 'Found',
-            'headers': {
-                'location': [{'key': 'Location', 'value': destination_url}],
-                'cache-control': [{'key': 'Cache-Control', 'value': 'private, max-age=0'}]
-            }
-        }
+        return _redirect(url)
 
     except Exception as e:
-        print(f"Error processing request for short_id '{short_id}': {str(e)}")
+        # Edge logs end up in the regional replicas—keep it brief but useful
+        print(f"[ERROR] short_id={short_id} err={e}")
         return {
-            'status': '500',
-            'statusDescription': 'Internal Server Error',
-            'body': 'An internal error occurred. Please check function logs.'
+            "status": "500",
+            "statusDescription": "Internal Server Error",
+            "body": "An internal error occurred. Please check function logs.",
         }
