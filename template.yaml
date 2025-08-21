@@ -7,6 +7,7 @@ Globals:
   Function:
     Timeout: 5
     MemorySize: 128
+    Architectures: [x86_64]   # Lambda@Edge expects x86_64
 
 Resources:
   # DynamoDB table to store the links
@@ -60,8 +61,30 @@ Resources:
       Handler: app.lambda_handler
       Runtime: python3.12
       Role: !GetAtt RedirectFunctionRole.Arn
-      # This is crucial for Lambda@Edge! It automatically creates versions.
-      AutoPublishAlias: live
+      AutoPublishAlias: live   # required so CloudFront can use a versioned ARN
+
+  # Cache policy that keys on country header to avoid cross-country caching of 302
+  CountryCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: geo-shortener-country-cache
+        DefaultTTL: 300
+        MaxTTL: 300
+        MinTTL: 0
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingBrotli: true
+          EnableAcceptEncodingGzip: true
+          HeadersConfig:
+            HeaderBehavior: whitelist
+            Headers:
+              Quantity: 1
+              Items:
+                - CloudFront-Viewer-Country
+          CookiesConfig:
+            CookieBehavior: none
+          QueryStringsConfig:
+            QueryStringBehavior: none
 
   # A dummy S3 Bucket required as a CloudFront Origin
   S3OriginBucket:
@@ -79,8 +102,9 @@ Resources:
           ViewerProtocolPolicy: redirect-to-https
           AllowedMethods: [GET, HEAD]
           Compress: true
+          CachePolicyId: !Ref CountryCachePolicy
           LambdaFunctionAssociations:
-            - EventType: viewer-request
+            - EventType: origin-request     # switch from viewer-request to origin-request
               LambdaFunctionARN: !Ref RedirectFunction.Version
         Origins:
           - Id: S3Origin
@@ -91,3 +115,9 @@ Outputs:
   CloudFrontDomainName:
     Description: "The domain name of the CloudFront distribution"
     Value: !GetAtt CloudFrontDistribution.DomainName
+  LambdaEdgeFunctionVersionArn:
+    Description: "Versioned ARN of the Lambda@Edge function"
+    Value: !Ref RedirectFunction.Version
+  DynamoDBTableName:
+    Description: "URL shortener table name"
+    Value: !Ref UrlShortenerTable
