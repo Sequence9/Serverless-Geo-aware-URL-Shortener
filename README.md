@@ -16,11 +16,11 @@ graph TD
         CF["fa:fa-globe CloudFront Edge Location"]
         Lambda["fa:fa-bolt Lambda@Edge Function"]
         Logic{{"fa:fa-search Was short_id found?"}}
-        DDB["fa:fa-database DynamoDB Table (us-east-2)"]
+        DDB["fa:fa-database DynamoDB Table (us-east-1)"]
     end
 
     User -- "1. GET /test" --> CF
-    CF -- "2. Triggers on viewer-request" --> Lambda
+    CF -- "2. Triggers on origin-request" --> Lambda
     
     subgraph "Lambda Execution Logic"
         Lambda -- "3. GetItem(short_id='test')" --> DDB
@@ -56,10 +56,10 @@ graph TD
 
 1.  A user requests a short URL (e.g., `https://your-domain.com/test`).
 2.  The request hits the nearest CloudFront Edge Location.
-3.  The CloudFront distribution triggers the `viewer-request` Lambda@Edge function.
+3.  The CloudFront distribution triggers the `origin-request` Lambda@Edge function, where the `CloudFront-Viewer-Country` header is available.
 4.  The Lambda function extracts the `short_id` (`test`) from the URL path and the viewer's two-letter country code from the `CloudFront-Viewer-Country` header.
 5.  It queries the DynamoDB table for an item with that `short_id`.
-6.  Based on the country code, it selects the appropriate destination URL from the item's `destinations` map. If a country-specific URL isn't found, it falls back to a `default` URL.
+6.  Based on the country code, it selects the appropriate destination URL from the item's `destinations` map. If a country-specific URL isn't found, it falls back to a `default` URL. CloudFront includes the country header in its cache key so redirects are not shared across countries.
 7.  The function returns an HTTP 302 redirect response to the user's browser, sending them to the final destination.
 
 ## Getting Started
