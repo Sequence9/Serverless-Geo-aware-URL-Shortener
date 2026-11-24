@@ -6,7 +6,7 @@ import boto3
 # Lambda@Edge runs in us-east-1 and env vars are not reliable there
 # Keep the table name constant and region us-east-1
 TABLE_NAME = "url-shortener"
-AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+AWS_REGION = "us-east-1"
 AWS_ENDPOINT_URL = os.getenv("AWS_ENDPOINT_URL")  # used for LocalStack in tests/CI
 
 # Use resource for native (de-typed) DynamoDB items.
